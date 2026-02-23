@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package sample.v1;
+
+option go_package = "grpc-inspect/gen/sample/v1;samplev1";
+
+service SampleService {
+  rpc Sample(SampleRequest) returns (SampleResponse);
+}
+
+message SampleRequest {
+  string input = 1;
+}
+
+message SampleResponse {
+  string output = 1;
+}
