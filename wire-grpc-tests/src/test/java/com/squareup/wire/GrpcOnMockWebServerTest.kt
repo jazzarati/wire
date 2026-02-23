@@ -99,6 +99,40 @@ class GrpcOnMockWebServerTest {
   }
 
   /**
+   * Integration test against a real Connect RPC server at localhost:8895.
+   * Requires: cd /tmp/wire-test2/demo/grpc-inspect && source bin/activate-hermit && go run .
+   *
+   * Verified that OkHttp correctly surfaces HTTP/2 trailers even when the server sends
+   * no DATA frames (trailers-only response). Wire produces a proper GrpcException with
+   * grpc-status and grpc-message extracted from trailers.
+   */
+  @Test
+  fun trailersOnlyErrorResponseFromRealServer() {
+    val realClient = OkHttpClient.Builder()
+      .protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
+      .build()
+    val realGrpcClient = GrpcClient.Builder()
+      .client(realClient)
+      .baseUrl("http://127.0.0.1:8895")
+      .build()
+
+    val method = GrpcMethod<Point, Feature>(
+      path = "/sample.v1.SampleService/Sample",
+      requestAdapter = Point.ADAPTER,
+      responseAdapter = Feature.ADAPTER,
+    )
+
+    val grpcCall = realGrpcClient.newCall(method)
+    try {
+      grpcCall.executeBlocking(Point())
+      fail("Expected GrpcException")
+    } catch (expected: GrpcException) {
+      assertThat(expected.grpcStatus).isEqualTo(GrpcStatus.FAILED_PRECONDITION)
+      assertThat(expected.grpcMessage).isEqualTo("sample error for input \"\"")
+    }
+  }
+
+  /**
    * When a gRPC server returns an error with no response body (trailers-only response over real
    * HTTP/2), the wire library should extract grpc-status and grpc-message from the trailers.
    * This reproduces the behavior of Connect RPC servers that send FailedPrecondition errors:
