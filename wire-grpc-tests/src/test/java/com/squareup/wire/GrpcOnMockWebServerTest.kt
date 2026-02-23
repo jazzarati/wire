@@ -18,6 +18,7 @@ package com.squareup.wire
 import assertk.assertThat
 import assertk.assertions.containsExactly
 import assertk.assertions.isEqualTo
+import assertk.assertions.isNotNull
 import com.squareup.wire.mockwebserver.GrpcDispatcher
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -25,10 +26,13 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.ObsoleteCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import okhttp3.Call
+import okhttp3.Headers.Companion.headersOf
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
+import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -91,6 +95,52 @@ class GrpcOnMockWebServerTest {
       assertThat(feature).isEqualTo(Feature(name = "tree"))
       assertThat(fakeRouteGuide.recordedGetFeatureCalls)
         .containsExactly(Point(latitude = 5, longitude = 6))
+    }
+  }
+
+  /**
+   * When a gRPC server returns an error with no response body (trailers-only response over real
+   * HTTP/2), the wire library should extract grpc-status and grpc-message from the trailers.
+   * This reproduces the behavior of Connect RPC servers that send FailedPrecondition errors:
+   * the response has content-type: application/grpc, an empty body, and trailers containing
+   * grpc-status and grpc-message.
+   */
+  @Test
+  fun trailersOnlyErrorResponseOverHttp2() {
+    // Use a separate MockWebServer without GrpcDispatcher so we can enqueue a raw response.
+    val rawServer = MockWebServer()
+    rawServer.protocols = listOf(Protocol.H2_PRIOR_KNOWLEDGE)
+    rawServer.start()
+
+    try {
+      rawServer.enqueue(
+        MockResponse()
+          .setHeader("Content-Type", "application/grpc")
+          .setBody(okio.Buffer()) // empty body
+          .setTrailers(
+            headersOf(
+              "grpc-status", "9",
+              "grpc-message", "failed precondition",
+            ),
+          ),
+      )
+
+      val rawGrpcClient = GrpcClient.Builder()
+        .client(okhttpClient)
+        .baseUrl(rawServer.url("/"))
+        .build()
+      val rawRouteGuideService = rawGrpcClient.create(RouteGuideClient::class)
+
+      val grpcCall = rawRouteGuideService.GetFeature()
+      try {
+        grpcCall.executeBlocking(Point(latitude = 5, longitude = 6))
+        fail()
+      } catch (expected: GrpcException) {
+        assertThat(expected.grpcStatus).isEqualTo(GrpcStatus.FAILED_PRECONDITION)
+        assertThat(expected.grpcMessage).isEqualTo("failed precondition")
+      }
+    } finally {
+      rawServer.shutdown()
     }
   }
 
